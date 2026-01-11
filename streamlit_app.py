@@ -1,8 +1,12 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 photo_processor_combined_auto_ai.py
-Обновленная версия: автоматическое определение фона и водяных знаков с улучшенной точностью
+Интеграция улучшенных методов для более чёткой детекции фона:
+- feather_mask
+- refine_with_grabcut
+- improve_background_mask (улучшенная версия)
+- detect_background_and_objects_improved (интеграция)
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ import cv2
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 
-# Импорт опциональных зависимостей
+# Опциональные зависимости
 try:
     import onnxruntime as ort
 except ImportError:
@@ -47,10 +51,9 @@ except ImportError:
     SamAutomaticMaskGenerator = None
     HAS_SAM = False
 
-# Определение переменной наличия streamlit
 HAS_STREAMLIT = st is not None
 
-# Настройка логгера
+# Логирование
 def setup_logger():
     fn = f"pp_auto_ai_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     import logging
@@ -64,11 +67,10 @@ def setup_logger():
 
 logger = setup_logger()
 
-# Пути моделей
+# Модельные пути / параметры
 ONNX_WM_PATH = Path("watermark_segmentation.onnx")
 SAM_PRETRAIN = "facebook/sam-vit-huge"
 
-# Загрузка ONNX модели
 onnx_session = None
 if ort is not None and ONNX_WM_PATH.exists():
     try:
@@ -77,7 +79,6 @@ if ort is not None and ONNX_WM_PATH.exists():
     except Exception:
         logger.exception("Ошибка загрузки ONNX модели")
 
-# Ленивая загрузка SAM
 _sam_generator = None
 def load_sam_lazy():
     global _sam_generator
@@ -137,65 +138,135 @@ class ProcessingConfig:
     inp: Path = Path("./input")
     outp: Path = Path("./output")
 
-# Создание папки при необходимости
 def ensure_dir(p: Path):
     try:
         p.mkdir(parents=True, exist_ok=True)
     except:
         logger.exception("Ошибка при создании директории %s", p)
 
-# ================== Новая функция улучшения границ и фона ====================
-def improve_background_mask(image_np):
-    """
-    Улучшает маску фона для нечетких границ, используя предварительную обработку,
-    градиенты и морфологию.
-    """
-    # 1. Конвертация в LAB и усиление контраста с помощью CLAHE
+# ----------------- Улучшенные функции маски фона -----------------
+def feather_mask(bin_mask: np.ndarray, feather_px: int = 15) -> np.ndarray:
+    if bin_mask.dtype != np.uint8:
+        bin_mask = (bin_mask > 0).astype(np.uint8) * 255
+    mask = (bin_mask > 0).astype(np.uint8)
+    if mask.sum() == 0:
+        return np.zeros_like(bin_mask, dtype=np.uint8)
+    dist_fg = cv2.distanceTransform(mask, cv2.DIST_L2, 5).astype(np.float32)
+    dist_bg = cv2.distanceTransform(1 - mask, cv2.DIST_L2, 5).astype(np.float32)
+    if feather_px > 0:
+        dist_fg = np.minimum(dist_fg, feather_px).astype(np.float32)
+        dist_bg = np.minimum(dist_bg, feather_px).astype(np.float32)
+    alpha = dist_fg / (dist_fg + dist_bg + 1e-8)
+    alpha = np.clip(alpha, 0.0, 1.0)
+    return (alpha * 255).astype(np.uint8)
+
+def refine_with_grabcut(image_rgb: np.ndarray, init_mask: np.ndarray,
+                        iter_count: int = 5, sure_fg_erode: int = 3,
+                        sure_bg_dilate: int = 5) -> np.ndarray:
+    h, w = init_mask.shape[:2]
+    if image_rgb.shape[:2] != (h, w):
+        raise ValueError("image and mask sizes mismatch")
+    img_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+    bin_mask = (init_mask > 0).astype(np.uint8) * 255
+    k_er = max(3, 2 * (sure_fg_erode // 2) + 1)
+    k_bg = max(3, 2 * (sure_bg_dilate // 2) + 1)
+    kernel_fg = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_er, k_er))
+    kernel_bg = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_bg, k_bg))
+    sure_fg = cv2.erode(bin_mask, kernel_fg, iterations=1)
+    sure_bg = cv2.dilate(bin_mask, kernel_bg, iterations=1)
+    sure_bg = cv2.bitwise_not(sure_bg)
+    gc_mask = np.full((h, w), cv2.GC_PR_BGD, dtype=np.uint8)
+    gc_mask[sure_bg > 0] = cv2.GC_BGD
+    gc_mask[sure_fg > 0] = cv2.GC_FGD
+    if sure_fg.sum() == 0:
+        cx, cy = w // 2, h // 2
+        padx = max(10, w // 10)
+        pady = max(10, h // 10)
+        gc_mask[cy - pady:cy + pady, cx - padx:cx + padx] = cv2.GC_PR_FGD
+    bgdModel = np.zeros((1, 65), np.float64)
+    fgdModel = np.zeros((1, 65), np.float64)
+    try:
+        cv2.grabCut(img_bgr, gc_mask, None, bgdModel, fgdModel, iter_count, cv2.GC_INIT_WITH_MASK)
+        result_mask = np.where((gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+    except Exception:
+        result_mask = bin_mask.copy()
+    return result_mask
+
+def improve_background_mask(image_np: np.ndarray, feather_ratio: float = 0.02) -> np.ndarray:
+    h, w = image_np.shape[:2]
     lab = cv2.cvtColor(image_np, cv2.COLOR_RGB2Lab)
     l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     l_eq = clahe.apply(l)
     lab_eq = cv2.merge([l_eq, a, b])
     img_eq = cv2.cvtColor(lab_eq, cv2.COLOR_Lab2RGB)
-
-    # 2. Перевод в серый цвет
-    gray = cv2.cvtColor(img_eq, cv2.COLOR_RGB2GRAY)
-
-    # 3. Детектирование границ с помощью Canny
-    edges = cv2.Canny(gray, threshold1=50, threshold2=150)
-    edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)), iterations=1)
-
-    # 4. Цветовая кластеризация для определения фона
-    a_channel = a.flatten()
-    b_channel = b.flatten()
-    a_b = np.stack([a_channel, b_channel], axis=1).astype(np.float32)
-
+    pixels = np.float32(np.stack([a.flatten(), b.flatten()], axis=1))
     try:
-        _, labels, centers = cv2.kmeans(
-            a_b, 2, None,
-            (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0),
-            10, cv2.KMEANS_PP_CENTERS
-        )
-        labels_img = labels.reshape(a.shape)
-        center_vals = centers.flatten()
+        _, labels, centers = cv2.kmeans(pixels, 2, None,
+                                        (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5),
+                                        10, cv2.KMEANS_PP_CENTERS)
+        labels = labels.flatten().reshape((h, w))
+        center_vals = centers.mean(axis=1)
         bg_label = int(np.argmin(center_vals))
-        mask_bg = (labels_img == bg_label).astype(np.uint8) * 255
-    except:
-        # Если кластеризация не удалась, используем всю область как фон
-        mask_bg = np.ones_like(a, dtype=np.uint8) * 255
+        mask_bg = (labels == bg_label).astype(np.uint8) * 255
+    except Exception:
+        mask_bg = np.ones((h, w), dtype=np.uint8) * 255
+    gray = cv2.cvtColor(img_eq, cv2.COLOR_RGB2GRAY)
+    sobx = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
+    soby = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
+    grad = cv2.magnitude(sobx.astype(np.float32), soby.astype(np.float32)).astype(np.uint8)
+    _, grad_th = cv2.threshold(grad, max(20, int(np.median(grad) * 1.5)), 255, cv2.THRESH_BINARY)
+    grad_th = cv2.dilate(grad_th, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
+    combined = cv2.bitwise_and(mask_bg, cv2.bitwise_not(grad_th))
+    ksize = max(3, min(h, w) // 100)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+    contours, _ = cv2.findContours(combined.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    area_thresh = (h * w) * 0.0005
+    mask_filtered = np.zeros_like(combined)
+    for c in contours:
+        if cv2.contourArea(c) >= area_thresh:
+            cv2.drawContours(mask_filtered, [c], -1, 255, thickness=-1)
+    sure_fg_erode = max(3, min(h, w) // 150)
+    sure_bg_dilate = max(5, min(h, w) // 60)
+    try:
+        init_fg_like = cv2.bitwise_not(mask_filtered)
+        grabcut_result = refine_with_grabcut(image_np, init_fg_like,
+                                             iter_count=5,
+                                             sure_fg_erode=sure_fg_erode,
+                                             sure_bg_dilate=sure_bg_dilate)
+        bg_mask_final = cv2.bitwise_not(grabcut_result)
+    except Exception:
+        bg_mask_final = mask_filtered
+    feather_px = max(3, int(min(h, w) * feather_ratio))
+    soft_bg = feather_mask(bg_mask_final, feather_px)
+    return soft_bg
 
-    # 5. Объединение границ и цветового фона
-    combined_mask = cv2.bitwise_or(mask_bg, edges)
+def detect_background_and_objects_improved(image_np: np.ndarray,
+                                           color_threshold: int = 30,
+                                           area_limits: Tuple[float, float] = (0.0005, 0.2)) -> np.ndarray:
+    soft_bg = improve_background_mask(image_np)
+    bin_bg = (soft_bg > 127).astype(np.uint8) * 255
+    inv = cv2.bitwise_not(bin_bg)
+    contours, _ = cv2.findContours(inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    h, w = image_np.shape[:2]
+    img_area = h * w
+    min_area, max_area = area_limits[0] * img_area, area_limits[1] * img_area
+    obj_mask = np.zeros((h, w), dtype=np.uint8)
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < min_area or area > max_area:
+            continue
+        cv2.drawContours(obj_mask, [c], -1, 255, thickness=-1)
+    if obj_mask.sum() > 0:
+        bg_mask = cv2.bitwise_and(soft_bg, cv2.bitwise_not(obj_mask))
+    else:
+        bg_mask = soft_bg
+    return bg_mask
 
-    # 6. Морфологическая обработка для сглаживания границ и устранения шумов
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
-    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
-
-    return combined_mask
-
-# ================== Остальные функции ====================
-
+# ----------------- Остальной функционал (с сохранением логики)
+# -----------------
 def remove_background_rembg(pil_img: Image.Image, cfg: ProcessingConfig) -> Optional[np.ndarray]:
     if not cfg.remove_bg or not HAS_REMBG or rembg_remove is None:
         return None
@@ -249,67 +320,11 @@ def segment_with_onnx(pil_img: Image.Image) -> np.ndarray:
         logger.exception("Ошибка сегментации ONNX")
         return np.zeros((pil_img.height, pil_img.width), dtype=np.uint8)
 
-def detect_background_and_objects(
-        image_np: np.ndarray,
-        color_threshold=30,
-        area_limits=(0.0005, 0.2)
-    ) -> np.ndarray:
-    """
-    Улучшенная детекция фона на основе кластеризации и градиентов.
-    Возвращает маску фона (uint8 0/255).
-    """
-    h, w = image_np.shape[:2]
-    img_area = h * w
-
-    # Детекция фона через кластеризацию по цвету
-    lab = cv2.cvtColor(image_np, cv2.COLOR_RGB2Lab)
-    l_channel = lab[:, :, 0]
-    a_channel = lab[:, :, 1]
-    b_channel = lab[:, :, 2]
-
-    try:
-        pixels = np.concatenate([a_channel.reshape(-1, 1), b_channel.reshape(-1, 1)], axis=1).astype(np.float32)
-        _, labels, centers = cv2.kmeans(pixels, 2, None,
-                                         (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0),
-                                         10, cv2.KMEANS_PP_CENTERS)
-        labels_image = labels.reshape(a_channel.shape)
-        center_vals = centers.flatten()
-        background_label = int(np.argmin(center_vals))
-        mask_bg = (labels_image == background_label).astype(np.uint8) * 255
-    except:
-        mask_bg = np.ones_like(l_channel, dtype=np.uint8) * 255
-
-    # Улучшение маски с помощью морфологии
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    mask_bg = cv2.morphologyEx(mask_bg, cv2.MORPH_OPEN, kernel)
-    mask_bg = cv2.morphologyEx(mask_bg, cv2.MORPH_CLOSE, kernel)
-
-    # Детекция границ, чтобы выделить объекты
-    sobelx = cv2.Sobel(l_channel, cv2.CV_16S, 1, 0, ksize=3)
-    sobely = cv2.Sobel(l_channel, cv2.CV_16S, 0, 1, ksize=3)
-    gradient = cv2.magnitude(sobelx, sobely).astype(np.uint8)
-    _, edges = cv2.threshold(gradient, 30, 255, cv2.THRESH_BINARY)
-    edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
-
-    # Объединяем маски
-    combined_mask = cv2.bitwise_or(mask_bg, edges)
-
-    # Находим контуры объектов
-    contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    mask_objects = np.zeros_like(l_channel, dtype=np.uint8)
-    img_area = h * w
-    min_area, max_area = area_limits[0] * img_area, area_limits[1] * img_area
-
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < min_area or area > max_area:
-            continue
-        cv2.drawContours(mask_objects, [c], -1, 255, thickness=-1)
-
-    # Возвращаем маску фона (обратную маске объектов)
-    final_bg_mask = cv2.bitwise_not(mask_objects)
-    return final_bg_mask
+def detect_background_and_objects(image_np: np.ndarray,
+                                  color_threshold=30,
+                                  area_limits=(0.0005, 0.2)) -> np.ndarray:
+    # Для обратной совместимости просто вызывает улучшенную версию
+    return detect_background_and_objects_improved(image_np, color_threshold, area_limits)
 
 def combine_masks(masks: List[np.ndarray]) -> Optional[np.ndarray]:
     if not masks:
@@ -326,13 +341,8 @@ def auto_detect_background_and_watermark(
         use_sam=True,
         use_onnx=True
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    Возвращает (bg_mask, wm_mask) - обе в формате uint8 0/255.
-    """
     h, w = image_np.shape[:2]
     img_area = h * w
-
-    # 1) rembg для фона
     bg_mask_candidates: List[np.ndarray] = []
     try:
         rembg_mask = remove_background_rembg(Image.fromarray(cv2.cvtColor(image_np, cv2.COLOR_RGB2RGBA)), cfg)
@@ -340,8 +350,6 @@ def auto_detect_background_and_watermark(
             bg_mask_candidates.append(rembg_mask)
     except:
         pass
-
-    # 2) сегментация для foreground
     fg_candidates = []
     pil = Image.fromarray(image_np)
     if use_sam and HAS_SAM:
@@ -357,18 +365,15 @@ def auto_detect_background_and_watermark(
         except:
             pass
     try:
-        obj_mask = detect_background_and_objects(image_np)
+        obj_mask = detect_background_and_objects_improved(image_np)
         if obj_mask is not None:
-            fg_candidates.append(obj_mask)
+            fg_candidates.append(cv2.bitwise_not((obj_mask > 127).astype(np.uint8) * 255))
     except:
         pass
-
     if fg_candidates:
         fg_comb = combine_masks(fg_candidates)
         bg_from_fg = cv2.bitwise_not((fg_comb > 0).astype(np.uint8) * 255)
         bg_mask_candidates.append(bg_from_fg)
-
-    # 3) Цветовая/краевая однородность
     try:
         margin = max(10, min(h, w) // 20)
         edges = []
@@ -393,16 +398,20 @@ def auto_detect_background_and_watermark(
             bg_mask_candidates.append(bg_color_mask)
     except:
         pass
-
-    # Голосование
+    # Добавим также улучшенную маску фона как кандидат
+    try:
+        improved_bg = improve_background_mask(image_np)
+        if improved_bg is not None:
+            bg_mask_candidates.append(improved_bg)
+    except:
+        pass
     if bg_mask_candidates:
         stacked = np.stack(bg_mask_candidates, axis=0)
         votes = np.sum(stacked > 0, axis=0)
+        # требуем хотя бы 1 голос (консервативно) — можно менять порог
         bg_mask = (votes >= 1).astype(np.uint8) * 255
     else:
         bg_mask = None
-
-    # Водяной знак
     wm_candidates: List[np.ndarray] = []
     try:
         gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
@@ -410,27 +419,22 @@ def auto_detect_background_and_watermark(
         tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
         _, th_tophat = cv2.threshold(tophat, max(10, int(tophat.mean()+tophat.std())), 255, cv2.THRESH_BINARY)
         wm_candidates.append(th_tophat)
-
         bs = 31 if min(h, w) > 200 else 15
         th_inv = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                        cv2.THRESH_BINARY_INV, bs, 9)
         th = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                    cv2.THRESH_BINARY, bs, 9)
         wm_candidates.extend([th_inv, th])
-
         blur = cv2.GaussianBlur(gray, (25,25), 0)
         diff = cv2.absdiff(gray, blur)
         _, th_diff = cv2.threshold(diff, max(8, int(diff.mean()+diff.std())), 255, cv2.THRESH_BINARY)
         wm_candidates.append(th_diff)
-
         combined_wm = combine_masks(wm_candidates)
         if combined_wm is None:
             combined_wm = np.zeros((h,w), dtype=np.uint8)
         kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
         combined_wm = cv2.morphologyEx(combined_wm, cv2.MORPH_OPEN, kernel2, iterations=1)
         combined_wm = cv2.morphologyEx(combined_wm, cv2.MORPH_CLOSE, kernel2, iterations=1)
-
-        # фильтр по размеру и форме
         contours, _ = cv2.findContours((combined_wm>0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         wm_mask = np.zeros((h,w), dtype=np.uint8)
         for c in contours:
@@ -456,8 +460,6 @@ def auto_detect_background_and_watermark(
             wm_candidates.append(wm_mask)
     except:
         pass
-
-    # ONNX watermark
     try:
         if onnx_session is not None:
             onnx_pred = segment_with_onnx(pil)
@@ -466,19 +468,14 @@ def auto_detect_background_and_watermark(
                 logger.info("ONNX watermark mask added")
     except:
         pass
-
     final_wm = combine_masks(wm_candidates) if wm_candidates else None
-
-    # проверка на чрезмерное покрытие
     if final_wm is not None:
         wm_area = np.count_nonzero(final_wm) / 255
         if wm_area > 0.25 * img_area:
             logger.info("отбрасываем wm (слишком большая область) %.3f", wm_area/img_area)
             final_wm = None
-
     return bg_mask, final_wm
 
-# ================== Процедура удаления водяного знака ====================
 def remove_watermark(img_cv: np.ndarray, mask: np.ndarray, params: WatermarkParams) -> np.ndarray:
     if mask is None or mask.sum() == 0:
         return img_cv
@@ -508,7 +505,6 @@ def remove_watermark(img_cv: np.ndarray, mask: np.ndarray, params: WatermarkPara
         logger.exception("Ошибка при удалении водяного знака")
         return img_cv
 
-# ================== Resize ====================
 def resize_cv(img_cv: np.ndarray, w_target: Optional[int], h_target: Optional[int]) -> np.ndarray:
     h, w = img_cv.shape[:2]
     if not w_target and not h_target:
@@ -523,7 +519,6 @@ def resize_cv(img_cv: np.ndarray, w_target: Optional[int], h_target: Optional[in
         return cv2.resize(img_cv, (max(1, int(w * scale)), h_target), interpolation=cv2.INTER_AREA)
     return img_cv
 
-# ================== Сохранение ====================
 def save_cv_image(img_cv: np.ndarray, out_path: Path, cfg: ProcessingConfig) -> bool:
     try:
         ensure_dir(out_path.parent)
@@ -545,7 +540,6 @@ def save_cv_image(img_cv: np.ndarray, out_path: Path, cfg: ProcessingConfig) -> 
         logger.exception("Ошибка при сохранении изображения %s", out_path)
         return False
 
-# ================== Основная обработка ====================
 def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=True, use_onnx=True) -> Tuple[bool, str]:
     try:
         pil = Image.open(in_path)
@@ -553,15 +547,11 @@ def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=
         image_np = np.array(pil_rgb.convert("RGB"))
         bg_mask = None
         wm_mask = None
-
-        # Авто-ИИ обнаружение
         if cfg.auto_ai:
             try:
                 bg_mask, wm_mask = auto_detect_background_and_watermark(image_np, cfg, use_sam=use_sam, use_onnx=use_onnx)
             except:
                 logger.exception("auto_detect failed")
-
-        # В случае отсутствия bg_mask, fallback на rembg или сегментацию
         if bg_mask is None and cfg.remove_bg:
             try:
                 bg_mask = remove_background_rembg(pil_rgb, cfg)
@@ -582,8 +572,6 @@ def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=
             if masks:
                 fg = combine_masks(masks)
                 bg_mask = cv2.bitwise_not((fg > 0).astype(np.uint8) * 255)
-
-        # Водо- и фоновые маски для watermark
         if wm_mask is None and cfg.remove_wm:
             try:
                 _, wmh = auto_detect_background_and_watermark(image_np, cfg, use_sam=use_sam, use_onnx=use_onnx)
@@ -591,8 +579,6 @@ def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=
                     wm_mask = wmh
             except:
                 pass
-
-        # Преобразование для inpaint и сохранения
         img_cv = np.array(pil_rgb)
         if img_cv.ndim == 2:
             img_cv = cv2.cvtColor(img_cv, cv2.COLOR_GRAY2BGR)
@@ -600,8 +586,6 @@ def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=
             img_cv = cv2.cvtColor(img_cv, cv2.COLOR_RGBA2BGRA)
         elif img_cv.shape[2] == 3:
             img_cv = cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR)
-
-        # Применение фона
         if cfg.remove_bg and bg_mask is not None and bg_mask.sum() > 0:
             try:
                 if img_cv.shape[2] == 3:
@@ -613,8 +597,6 @@ def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=
                 logger.info("Applied background mask, bg pixels=%d", int(np.count_nonzero(new_alpha==0)))
             except:
                 logger.exception("apply bg mask failed")
-
-        # Удаление водяного знака
         if cfg.remove_wm and wm_mask is not None and wm_mask.sum() > 0:
             try:
                 wm_m = (wm_mask > 0).astype(np.uint8)
@@ -622,7 +604,6 @@ def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=
                 logger.info("Applied watermark removal, wm pixels=%d", int(np.count_nonzero(wm_m)))
             except:
                 logger.exception("apply wm failed")
-
         out_final = out_path.with_suffix("." + cfg.fmt.lower())
         if save_cv_image(img_cv, out_final, cfg):
             return True, ""
@@ -633,7 +614,6 @@ def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=
         logger.exception("Обработка изображения сбой: %s", in_path)
         return False, "Ошибка обработки"
 
-# ================== Блок batch обработки ====================
 def validate_ext(p: Path) -> bool:
     return p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 
@@ -654,7 +634,6 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: ProcessingConfig, max_
                 results.append((p, False, "Exception"))
     return results
 
-# ================== CLI и запуск ====================
 def run_cli(argv=None):
     parser = argparse.ArgumentParser(description="Photo Processor Auto-AI")
     parser.add_argument("--input", type=Path, default=Path("./input"))
