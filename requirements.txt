@@ -1,36 +1,34 @@
-# write_requirements.py
-# Создаёт requirements.txt для проекта photo_processor_combined_auto_ai
+# write_requirements_ready.py
+# Создаёт готовый requirements.txt для photo_processor_combined_auto_ai.py
 from pathlib import Path
 
-requirements = """# Requirements for photo_processor_auto_ai
-# Core dependencies
+requirements = """# Requirements for photo_processor_combined_auto_ai
+# Core (required for basic processing)
 numpy>=1.23
-opencv-python>=4.6.0
+opencv-python-headless>=4.6.0  # use opencv-python on desktop if you need GUI support
 Pillow>=9.0
 
-# Optional: background removal (rembg)
+# Optional / recommended (may be heavy or need native wheels)
+# Background removal (rembg may require additional system libs)
 rembg>=2.0
 
-# Optional: ONNX runtime (CPU). For GPU use onnxruntime-gpu
+# ONNX runtime (CPU). If you have GPU and want GPU runtime, install
+# onnxruntime-gpu instead.
 onnxruntime>=1.15
 
-# Optional: segmentation / SAM via transformers (may require torch)
+# Segment Anything Model (SAM) via transformers (requires torch)
 transformers>=4.30.0
 torch>=1.12.0
 
-# Optional: web UI
+# Optional web UI for quick testing
 streamlit>=1.20
 
-# Helpful extras (uncomment if needed)
-# safetensors>=0.3.0
-# tqdm>=4.64.0
-
 # Notes:
-# - rembg can require additional system libraries and may internally use
-# onnxruntime.
-# - If you only run in server/CI with no display, consider
-# opencv-python-headless instead of opencv-python.
-# - Pin specific versions as needed for reproducibility.
+# - If you deploy to headless server use opencv-python-headless (as above).
+# - Some packages (torch, rembg, onnxruntime) are large and may fail to build in
+# restricted CI.
+# If installation fails, install them separately using prebuilt wheels for your
+# platform.
 """
 
 out = Path("requirements.txt")
