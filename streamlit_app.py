@@ -144,7 +144,57 @@ def ensure_dir(p: Path):
     except:
         logger.exception("Ошибка при создании директории %s", p)
 
-# Функции обработки изображений
+# ================== Новая функция улучшения границ и фона ====================
+def improve_background_mask(image_np):
+    """
+    Улучшает маску фона для нечетких границ, используя предварительную обработку,
+    градиенты и морфологию.
+    """
+    # 1. Конвертация в LAB и усиление контраста с помощью CLAHE
+    lab = cv2.cvtColor(image_np, cv2.COLOR_RGB2Lab)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    l_eq = clahe.apply(l)
+    lab_eq = cv2.merge([l_eq, a, b])
+    img_eq = cv2.cvtColor(lab_eq, cv2.COLOR_Lab2RGB)
+
+    # 2. Перевод в серый цвет
+    gray = cv2.cvtColor(img_eq, cv2.COLOR_RGB2GRAY)
+
+    # 3. Детектирование границ с помощью Canny
+    edges = cv2.Canny(gray, threshold1=50, threshold2=150)
+    edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3)), iterations=1)
+
+    # 4. Цветовая кластеризация для определения фона
+    a_channel = a.flatten()
+    b_channel = b.flatten()
+    a_b = np.stack([a_channel, b_channel], axis=1).astype(np.float32)
+
+    try:
+        _, labels, centers = cv2.kmeans(
+            a_b, 2, None,
+            (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0),
+            10, cv2.KMEANS_PP_CENTERS
+        )
+        labels_img = labels.reshape(a.shape)
+        center_vals = centers.flatten()
+        bg_label = int(np.argmin(center_vals))
+        mask_bg = (labels_img == bg_label).astype(np.uint8) * 255
+    except:
+        # Если кластеризация не удалась, используем всю область как фон
+        mask_bg = np.ones_like(a, dtype=np.uint8) * 255
+
+    # 5. Объединение границ и цветового фона
+    combined_mask = cv2.bitwise_or(mask_bg, edges)
+
+    # 6. Морфологическая обработка для сглаживания границ и устранения шумов
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
+
+    return combined_mask
+
+# ================== Остальные функции ====================
 
 def remove_background_rembg(pil_img: Image.Image, cfg: ProcessingConfig) -> Optional[np.ndarray]:
     if not cfg.remove_bg or not HAS_REMBG or rembg_remove is None:
@@ -428,6 +478,7 @@ def auto_detect_background_and_watermark(
 
     return bg_mask, final_wm
 
+# ================== Процедура удаления водяного знака ====================
 def remove_watermark(img_cv: np.ndarray, mask: np.ndarray, params: WatermarkParams) -> np.ndarray:
     if mask is None or mask.sum() == 0:
         return img_cv
@@ -457,6 +508,7 @@ def remove_watermark(img_cv: np.ndarray, mask: np.ndarray, params: WatermarkPara
         logger.exception("Ошибка при удалении водяного знака")
         return img_cv
 
+# ================== Resize ====================
 def resize_cv(img_cv: np.ndarray, w_target: Optional[int], h_target: Optional[int]) -> np.ndarray:
     h, w = img_cv.shape[:2]
     if not w_target and not h_target:
@@ -471,6 +523,7 @@ def resize_cv(img_cv: np.ndarray, w_target: Optional[int], h_target: Optional[in
         return cv2.resize(img_cv, (max(1, int(w * scale)), h_target), interpolation=cv2.INTER_AREA)
     return img_cv
 
+# ================== Сохранение ====================
 def save_cv_image(img_cv: np.ndarray, out_path: Path, cfg: ProcessingConfig) -> bool:
     try:
         ensure_dir(out_path.parent)
@@ -492,6 +545,7 @@ def save_cv_image(img_cv: np.ndarray, out_path: Path, cfg: ProcessingConfig) -> 
         logger.exception("Ошибка при сохранении изображения %s", out_path)
         return False
 
+# ================== Основная обработка ====================
 def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=True, use_onnx=True) -> Tuple[bool, str]:
     try:
         pil = Image.open(in_path)
@@ -579,6 +633,7 @@ def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=
         logger.exception("Обработка изображения сбой: %s", in_path)
         return False, "Ошибка обработки"
 
+# ================== Блок batch обработки ====================
 def validate_ext(p: Path) -> bool:
     return p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 
@@ -599,6 +654,7 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: ProcessingConfig, max_
                 results.append((p, False, "Exception"))
     return results
 
+# ================== CLI и запуск ====================
 def run_cli(argv=None):
     parser = argparse.ArgumentParser(description="Photo Processor Auto-AI")
     parser.add_argument("--input", type=Path, default=Path("./input"))
