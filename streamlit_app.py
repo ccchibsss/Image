@@ -1,4 +1,4 @@
-# !/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 photo_processor_combined_auto_ai.py
@@ -144,8 +144,10 @@ def ensure_dir(p: Path):
     except:
         logger.exception("Ошибка при создании директории %s", p)
 
-# ----------------- Улучшенные функции маски фона -----------------
+# ================== Улучшенные функции для маски фона ==================
+
 def feather_mask(bin_mask: np.ndarray, feather_px: int = 15) -> np.ndarray:
+    """Размытие и плавное плавление маски"""
     if bin_mask.dtype != np.uint8:
         bin_mask = (bin_mask > 0).astype(np.uint8) * 255
     mask = (bin_mask > 0).astype(np.uint8)
@@ -163,9 +165,10 @@ def feather_mask(bin_mask: np.ndarray, feather_px: int = 15) -> np.ndarray:
 def refine_with_grabcut(image_rgb: np.ndarray, init_mask: np.ndarray,
                         iter_count: int = 5, sure_fg_erode: int = 3,
                         sure_bg_dilate: int = 5) -> np.ndarray:
+    """Refinement маски GrabCut"""
     h, w = init_mask.shape[:2]
     if image_rgb.shape[:2] != (h, w):
-        raise ValueError("image and mask sizes mismatch")
+        raise ValueError("Размеры картинки и маски не совпадают")
     img_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     bin_mask = (init_mask > 0).astype(np.uint8) * 255
     k_er = max(3, 2 * (sure_fg_erode // 2) + 1)
@@ -193,13 +196,16 @@ def refine_with_grabcut(image_rgb: np.ndarray, init_mask: np.ndarray,
     return result_mask
 
 def improve_background_mask(image_np: np.ndarray, feather_ratio: float = 0.02) -> np.ndarray:
+    """Улучшенная маска фона с градиентами и grabcut"""
     h, w = image_np.shape[:2]
     lab = cv2.cvtColor(image_np, cv2.COLOR_RGB2Lab)
     l, a, b = cv2.split(lab)
+    # Улучшаем контрастность L с помощью CLAHE
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     l_eq = clahe.apply(l)
     lab_eq = cv2.merge([l_eq, a, b])
     img_eq = cv2.cvtColor(lab_eq, cv2.COLOR_Lab2RGB)
+    # кластеризация для определения фона
     pixels = np.float32(np.stack([a.flatten(), b.flatten()], axis=1))
     try:
         _, labels, centers = cv2.kmeans(pixels, 2, None,
@@ -211,6 +217,7 @@ def improve_background_mask(image_np: np.ndarray, feather_ratio: float = 0.02) -
         mask_bg = (labels == bg_label).astype(np.uint8) * 255
     except Exception:
         mask_bg = np.ones((h, w), dtype=np.uint8) * 255
+    # Градиенты (Sobel) для выделения границ
     gray = cv2.cvtColor(img_eq, cv2.COLOR_RGB2GRAY)
     sobx = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
     soby = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
@@ -228,24 +235,28 @@ def improve_background_mask(image_np: np.ndarray, feather_ratio: float = 0.02) -
     for c in contours:
         if cv2.contourArea(c) >= area_thresh:
             cv2.drawContours(mask_filtered, [c], -1, 255, thickness=-1)
+    # GrabCut refinement
     sure_fg_erode = max(3, min(h, w) // 150)
     sure_bg_dilate = max(5, min(h, w) // 60)
     try:
         init_fg_like = cv2.bitwise_not(mask_filtered)
-        grabcut_result = refine_with_grabcut(image_np, init_fg_like,
-                                             iter_count=5,
-                                             sure_fg_erode=sure_fg_erode,
-                                             sure_bg_dilate=sure_bg_dilate)
-        bg_mask_final = cv2.bitwise_not(grabcut_result)
-    except Exception:
+        grabcut_mask = refine_with_grabcut(image_np, init_fg_like, iter_count=5,
+                                            sure_fg_erode=sure_fg_erode,
+                                            sure_bg_dilate=sure_bg_dilate)
+        bg_mask_final = cv2.bitwise_not(grabcut_mask)
+    except:
         bg_mask_final = mask_filtered
+    # Feather mask
     feather_px = max(3, int(min(h, w) * feather_ratio))
     soft_bg = feather_mask(bg_mask_final, feather_px)
     return soft_bg
 
-def detect_background_and_objects_improved(image_np: np.ndarray,
-                                           color_threshold: int = 30,
-                                           area_limits: Tuple[float, float] = (0.0005, 0.2)) -> np.ndarray:
+def detect_background_and_objects_improved(
+        image_np: np.ndarray,
+        color_threshold: int = 30,
+        area_limits: Tuple[float, float] = (0.0005, 0.2)
+) -> np.ndarray:
+    """Общая функция для более точного определения фона и объектов"""
     soft_bg = improve_background_mask(image_np)
     bin_bg = (soft_bg > 127).astype(np.uint8) * 255
     inv = cv2.bitwise_not(bin_bg)
@@ -258,15 +269,16 @@ def detect_background_and_objects_improved(image_np: np.ndarray,
         area = cv2.contourArea(c)
         if area < min_area or area > max_area:
             continue
-        cv2.drawContours(obj_mask, [c], -1, 255, thickness=-1)
+        cv2.drawContours(obj_mask, [c], -1, 255, -1)
+    # Объединение маски фона и объектов
     if obj_mask.sum() > 0:
         bg_mask = cv2.bitwise_and(soft_bg, cv2.bitwise_not(obj_mask))
     else:
         bg_mask = soft_bg
     return bg_mask
 
-# ----------------- Остальной функционал (с сохранением логики)
-# -----------------
+# ----------------- Остальные функции (оставляем ваши уже определённые) -----------------
+
 def remove_background_rembg(pil_img: Image.Image, cfg: ProcessingConfig) -> Optional[np.ndarray]:
     if not cfg.remove_bg or not HAS_REMBG or rembg_remove is None:
         return None
@@ -319,12 +331,6 @@ def segment_with_onnx(pil_img: Image.Image) -> np.ndarray:
     except:
         logger.exception("Ошибка сегментации ONNX")
         return np.zeros((pil_img.height, pil_img.width), dtype=np.uint8)
-
-def detect_background_and_objects(image_np: np.ndarray,
-                                  color_threshold=30,
-                                  area_limits=(0.0005, 0.2)) -> np.ndarray:
-    # Для обратной совместимости просто вызывает улучшенную версию
-    return detect_background_and_objects_improved(image_np, color_threshold, area_limits)
 
 def combine_masks(masks: List[np.ndarray]) -> Optional[np.ndarray]:
     if not masks:
@@ -398,20 +404,21 @@ def auto_detect_background_and_watermark(
             bg_mask_candidates.append(bg_color_mask)
     except:
         pass
-    # Добавим также улучшенную маску фона как кандидат
+    # Добавляем улучшенную маску фона
     try:
         improved_bg = improve_background_mask(image_np)
         if improved_bg is not None:
             bg_mask_candidates.append(improved_bg)
     except:
         pass
+    # Итоговая маска фона
     if bg_mask_candidates:
         stacked = np.stack(bg_mask_candidates, axis=0)
         votes = np.sum(stacked > 0, axis=0)
-        # требуем хотя бы 1 голос (консервативно) — можно менять порог
         bg_mask = (votes >= 1).astype(np.uint8) * 255
     else:
         bg_mask = None
+    # Водяной знак
     wm_candidates: List[np.ndarray] = []
     try:
         gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
@@ -419,22 +426,27 @@ def auto_detect_background_and_watermark(
         tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
         _, th_tophat = cv2.threshold(tophat, max(10, int(tophat.mean()+tophat.std())), 255, cv2.THRESH_BINARY)
         wm_candidates.append(th_tophat)
+
         bs = 31 if min(h, w) > 200 else 15
         th_inv = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                        cv2.THRESH_BINARY_INV, bs, 9)
         th = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                    cv2.THRESH_BINARY, bs, 9)
         wm_candidates.extend([th_inv, th])
+
         blur = cv2.GaussianBlur(gray, (25,25), 0)
         diff = cv2.absdiff(gray, blur)
         _, th_diff = cv2.threshold(diff, max(8, int(diff.mean()+diff.std())), 255, cv2.THRESH_BINARY)
         wm_candidates.append(th_diff)
+
         combined_wm = combine_masks(wm_candidates)
         if combined_wm is None:
             combined_wm = np.zeros((h,w), dtype=np.uint8)
         kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
         combined_wm = cv2.morphologyEx(combined_wm, cv2.MORPH_OPEN, kernel2, iterations=1)
         combined_wm = cv2.morphologyEx(combined_wm, cv2.MORPH_CLOSE, kernel2, iterations=1)
+
+        # фильтр по размеру и форме
         contours, _ = cv2.findContours((combined_wm>0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         wm_mask = np.zeros((h,w), dtype=np.uint8)
         for c in contours:
