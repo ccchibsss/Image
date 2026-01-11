@@ -47,6 +47,9 @@ except ImportError:
     SamAutomaticMaskGenerator = None
     HAS_SAM = False
 
+# Определение переменной наличия streamlit
+HAS_STREAMLIT = st is not None
+
 # Настройка логгера
 def setup_logger():
     fn = f"pp_auto_ai_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -550,7 +553,6 @@ def process_image(in_path: Path, out_path: Path, cfg: ProcessingConfig, use_sam=
         if cfg.remove_wm and wm_mask is not None and wm_mask.sum() > 0:
             try:
                 wm_m = (wm_mask > 0).astype(np.uint8)
-                wm_m = (wm_m * 255).astype(np.uint8)
                 img_cv = remove_watermark(img_cv, wm_m, cfg.wm_params)
                 logger.info("Applied watermark removal, wm pixels=%d", int(np.count_nonzero(wm_m)))
             except:
@@ -587,7 +589,6 @@ def process_batch(input_dir: Path, output_dir: Path, cfg: ProcessingConfig, max_
     return results
 
 def run_cli(argv=None):
-    import argparse
     parser = argparse.ArgumentParser(description="Photo Processor Auto-AI")
     parser.add_argument("--input", type=Path, default=Path("./input"))
     parser.add_argument("--output", type=Path, default=Path("./output"))
@@ -629,7 +630,10 @@ def run_streamlit():
     input_dir = temp_dir if use_uploaded and temp_dir is not None else Path(st.sidebar.text_input("Папка входа", str(cfg.inp)))
     output_dir = Path(st.sidebar.text_input("Папка выхода", str(cfg.outp)))
     if st.button("Обработать"):
-        cfg_local = ProcessingConfig(remove_bg=remove_bg, remove_wm=remove_wm, auto_ai=auto_ai, inp=Path(input_dir), outp=Path(output_dir))
+        cfg_local = ProcessingConfig(inp=Path(input_dir), outp=Path(output_dir))
+        cfg_local.remove_bg = remove_bg
+        cfg_local.remove_wm = remove_wm
+        cfg_local.auto_ai = auto_ai
         with st.spinner("Обработка..."):
             results = process_batch(cfg_local.inp, cfg_local.outp, cfg_local, max_workers=int(workers), use_sam=use_sam, use_onnx=use_onnx)
         success = sum(1 for _, ok, _ in results if ok)
