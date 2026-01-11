@@ -1,40 +1,7 @@
-"""
-Create a requirements.txt suitable for the provided photo_processor_combined_auto_ai.py script.
-
-This script writes a recommended requirements.txt listing required and optional packages
-(ONNX / SAM / rembg / streamlit are optional in the original script).
-"""
-from pathlib import Path
-
-requirements_text = """# Core dependencies
-numpy>=1.23
-opencv-python>=4.5
-Pillow>=9.0
-
-# Optional / conditional dependencies used in the script:
-# rembg - background removal (optional)
-rembg>=2.0
-
-# ONNX runtime - optional if you have an ONNX watermark/background model
-onnxruntime>=1.14
-
-# Transformers + PyTorch - optional for SAM segmentation via transformers
-transformers>=4.30
-torch>=1.13
-
-# Streamlit - optional if you want the web UI
-streamlit>=1.20
-
-# Notes:
-# - Depending on your environment (server / headless) you may prefer
-# opencv-python-headless
-# instead of opencv-python.
-# - SAM (Segment Anything) via Transformers may require additional model weights
-# and
-# sufficient GPU/CPU memory.
-# - Pin exact versions according to your environment if needed.
-"""
-
-out_file = Path("requirements.txt")
-out_file.write_text(requirements_text, encoding="utf-8")
-print(f"Wrote {out_file.resolve()}")
+opencv-python
+numpy
+Pillow
+onnxruntime
+rembg
+transformers
+streamlit ; extra == "streamlit"
