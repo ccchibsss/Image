@@ -1,36 +1,10 @@
-# write_requirements_ready.py
-# Создаёт готовый requirements.txt для photo_processor_combined_auto_ai.py
-from pathlib import Path
+# Обязательные зависимости
+opencv-python
+numpy
+pillow
 
-requirements = """# Requirements for photo_processor_combined_auto_ai
-# Core (required for basic processing)
-numpy>=1.23
-opencv-python-headless>=4.6.0  # use opencv-python on desktop if you need GUI support
-Pillow>=9.0
-
-# Optional / recommended (may be heavy or need native wheels)
-# Background removal (rembg may require additional system libs)
-rembg>=2.0
-
-# ONNX runtime (CPU). If you have GPU and want GPU runtime, install
-# onnxruntime-gpu instead.
-onnxruntime>=1.15
-
-# Segment Anything Model (SAM) via transformers (requires torch)
-transformers>=4.30.0
-torch>=1.12.0
-
-# Optional web UI for quick testing
-streamlit>=1.20
-
-# Notes:
-# - If you deploy to headless server use opencv-python-headless (as above).
-# - Some packages (torch, rembg, onnxruntime) are large and may fail to build in
-# restricted CI.
-# If installation fails, install them separately using prebuilt wheels for your
-# platform.
-"""
-
-out = Path("requirements.txt")
-out.write_text(requirements, encoding="utf-8")
-print(f"Wrote {out.resolve()}")
+# Опциональные зависимости
+onnxruntime      # для ONNX сегментации
+rembg            # для автоматического удаления фона
+transformers     # для модели SAM
+streamlit        # для веб-интерфейса
