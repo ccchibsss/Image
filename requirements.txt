@@ -1,6 +1,38 @@
-streamlit>=1.38.0
-rembg==2.0.69  # или удалите эту строку
-rich>=10.14.0
-opencv-python-headless
-Pillow
-numpy
+# write_requirements.py
+# Создаёт requirements.txt для проекта photo_processor_combined_auto_ai
+from pathlib import Path
+
+requirements = """# Requirements for photo_processor_auto_ai
+# Core dependencies
+numpy>=1.23
+opencv-python>=4.6.0
+Pillow>=9.0
+
+# Optional: background removal (rembg)
+rembg>=2.0
+
+# Optional: ONNX runtime (CPU). For GPU use onnxruntime-gpu
+onnxruntime>=1.15
+
+# Optional: segmentation / SAM via transformers (may require torch)
+transformers>=4.30.0
+torch>=1.12.0
+
+# Optional: web UI
+streamlit>=1.20
+
+# Helpful extras (uncomment if needed)
+# safetensors>=0.3.0
+# tqdm>=4.64.0
+
+# Notes:
+# - rembg can require additional system libraries and may internally use
+# onnxruntime.
+# - If you only run in server/CI with no display, consider
+# opencv-python-headless instead of opencv-python.
+# - Pin specific versions as needed for reproducibility.
+"""
+
+out = Path("requirements.txt")
+out.write_text(requirements, encoding="utf-8")
+print(f"Wrote {out.resolve()}")
