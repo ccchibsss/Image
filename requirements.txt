@@ -1,57 +1,40 @@
-# !/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-prepare_requirements.py
+Create a requirements.txt suitable for the provided photo_processor_combined_auto_ai.py script.
 
-Генерирует requirements.txt и requirements-optional.txt для photo_processor_combined_auto_ai.py
+This script writes a recommended requirements.txt listing required and optional packages
+(ONNX / SAM / rembg / streamlit are optional in the original script).
 """
 from pathlib import Path
-import sys
 
-CORE = [
-    "numpy>=1.21",
-    "opencv-python>=4.5",
-    "Pillow>=8.0",
-]
+requirements_text = """# Core dependencies
+numpy>=1.23
+opencv-python>=4.5
+Pillow>=9.0
 
-OPTIONAL = [
-    "onnxruntime>=1.10   # optional: ONNX runtime for onnx models",
-    "rembg>=2.0.32      # optional: background removal (may require pillow, numpy)",
-    "streamlit>=1.0     # optional: UI",
-    "transformers>=4.25  # optional: SAM via transformers (large)",
-    # transformers SAM typically requires a deep-learning backend (torch). Install torch according to your CUDA:
-    "torch>=1.12.0      # optional: install CPU or CUDA build manually, see https://pytorch.org/",
-    "torchvision>=0.13  # optional companion to torch",
-]
+# Optional / conditional dependencies used in the script:
+# rembg - background removal (optional)
+rembg>=2.0
 
-NOTES = [
-    "# Notes:",
-    "# - torch must be installed with the correct CUDA/CPU wheel for your system. See https://pytorch.org/get-started/locally/",
-    "# - transformers + SAM model (facebook/sam-vit-huge) is very large (~>7GB model) and requires adequate RAM/GPU.",
-    "# - rembg may require additional native dependencies (libwebp, etc.) depending on platform.",
-]
+# ONNX runtime - optional if you have an ONNX watermark/background model
+onnxruntime>=1.14
 
-def write_file(path: Path, lines):
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Wrote {path}")
+# Transformers + PyTorch - optional for SAM segmentation via transformers
+transformers>=4.30
+torch>=1.13
 
-def main():
-    base = Path(".")
-    write_file(base / "requirements.txt", CORE + [""] + ["# Optional extras are listed in requirements-optional.txt"])
-    write_file(base / "requirements-optional.txt", OPTIONAL + [""] + NOTES)
-    # helpful install instructions
-    install_sh = base / "install_requirements.sh"
-    install_sh.write_text(
-        "#!/bin/sh\n"
-        "set -e\n"
-        "python -m pip install --upgrade pip\n"
-        "python -m pip install -r requirements.txt\n"
-        "echo \"To install optional extras, run: python -m pip install -r requirements-optional.txt\"\n",
-        encoding="utf-8"
-    )
-    install_sh.chmod(0o755)
-    print("Created install_requirements.sh - run it to install core deps.")
-    print("Remember to install torch with the correct CUDA/CPU variant if you need SAM/transformers support.")
+# Streamlit - optional if you want the web UI
+streamlit>=1.20
 
-if __name__ == "__main__":
-    main()
+# Notes:
+# - Depending on your environment (server / headless) you may prefer
+# opencv-python-headless
+# instead of opencv-python.
+# - SAM (Segment Anything) via Transformers may require additional model weights
+# and
+# sufficient GPU/CPU memory.
+# - Pin exact versions according to your environment if needed.
+"""
+
+out_file = Path("requirements.txt")
+out_file.write_text(requirements_text, encoding="utf-8")
+print(f"Wrote {out_file.resolve()}")
