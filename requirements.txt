@@ -1,71 +1,57 @@
-altair==6.0.0
-attrs==25.4.0
-blinker==1.9.0
-cachetools==6.2.4
-certifi==2026.1.4
-charset-normalizer==3.4.4
-click==8.3.1
-coloredlogs==15.0.1
-filelock==3.20.3
-flatbuffers==25.12.19
-fsspec==2026.1.0
-gitdb==4.0.12
-gitpython==3.1.46
-hf-xet==1.2.0
-huggingface-hub==0.36.0
-humanfriendly==10.0
-idna==3.11
-imageio==2.37.2
-jinja2==3.1.6
-jsonschema==4.26.0
-jsonschema-specifications==2025.9.1
-lazy-loader==0.4
-llvmlite==0.46.0
-markupsafe==3.0.3
-mpmath==1.3.0
-narwhals==2.15.0
-networkx==3.6.1
-numba==0.63.1
-numpy==2.2.6
-onnxruntime==1.23.2
-opencv-python==4.12.0.88
-opencv-python-headless==4.12.0.88
-packaging==25.0
-pandas==2.3.3
-pillow==12.1.0
-platformdirs==4.5.1
-pooch==1.8.2
-protobuf==6.33.3
-pyarrow==22.0.0
-pydeck==0.9.1
-pymatting==1.1.14
-python-dateutil==2.9.0.post0
-pytz==2025.2
-pyyaml==6.0.3
-referencing==0.37.0
-regex==2025.11.3
-rembg==2.0.69
-requests==2.32.5
-rpds-py==0.30.0
-safetensors==0.7.0
-scikit-image==0.26.0
-scipy==1.17.0
-six==1.17.0
-smmap==5.0.2
-streamlit==1.52.2
-sympy==1.14.0
-tenacity==9.1.2
-tifffile==2025.12.20
-tokenizers==0.22.2
-toml==0.10.2
-tornado==6.5.4
-tqdm==4.67.1
-transformers==4.57.3
-typing-extensions==4.15.0
-tzdata==2025.3
-urllib3==2.6.3
-watchdog==6.0.0
-rich==14.2.0
-markdown-it-py==4.0.0
-mdurl==0.1.2
-pygments==2.19.2
+# !/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+prepare_requirements.py
+
+Генерирует requirements.txt и requirements-optional.txt для photo_processor_combined_auto_ai.py
+"""
+from pathlib import Path
+import sys
+
+CORE = [
+    "numpy>=1.21",
+    "opencv-python>=4.5",
+    "Pillow>=8.0",
+]
+
+OPTIONAL = [
+    "onnxruntime>=1.10   # optional: ONNX runtime for onnx models",
+    "rembg>=2.0.32      # optional: background removal (may require pillow, numpy)",
+    "streamlit>=1.0     # optional: UI",
+    "transformers>=4.25  # optional: SAM via transformers (large)",
+    # transformers SAM typically requires a deep-learning backend (torch). Install torch according to your CUDA:
+    "torch>=1.12.0      # optional: install CPU or CUDA build manually, see https://pytorch.org/",
+    "torchvision>=0.13  # optional companion to torch",
+]
+
+NOTES = [
+    "# Notes:",
+    "# - torch must be installed with the correct CUDA/CPU wheel for your system. See https://pytorch.org/get-started/locally/",
+    "# - transformers + SAM model (facebook/sam-vit-huge) is very large (~>7GB model) and requires adequate RAM/GPU.",
+    "# - rembg may require additional native dependencies (libwebp, etc.) depending on platform.",
+]
+
+def write_file(path: Path, lines):
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Wrote {path}")
+
+def main():
+    base = Path(".")
+    write_file(base / "requirements.txt", CORE + [""] + ["# Optional extras are listed in requirements-optional.txt"])
+    write_file(base / "requirements-optional.txt", OPTIONAL + [""] + NOTES)
+    # helpful install instructions
+    install_sh = base / "install_requirements.sh"
+    install_sh.write_text(
+        "#!/bin/sh\n"
+        "set -e\n"
+        "python -m pip install --upgrade pip\n"
+        "python -m pip install -r requirements.txt\n"
+        "echo \"To install optional extras, run: python -m pip install -r requirements-optional.txt\"\n",
+        encoding="utf-8"
+    )
+    install_sh.chmod(0o755)
+    print("Created install_requirements.sh - run it to install core deps.")
+    print("Remember to install torch with the correct CUDA/CPU variant if you need SAM/transformers support.")
+
+if __name__ == "__main__":
+    main()
