@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 photo_processor_combined_auto_ai.py
-Обновленная версия: автоматическое определение фона и водяных знаков
+Обновленная версия: автоматическое определение фона и водяных знаков с улучшенной точностью
 """
 
 from __future__ import annotations
@@ -199,56 +199,67 @@ def segment_with_onnx(pil_img: Image.Image) -> np.ndarray:
         logger.exception("Ошибка сегментации ONNX")
         return np.zeros((pil_img.height, pil_img.width), dtype=np.uint8)
 
-def detect_background_and_objects(image_np: np.ndarray) -> np.ndarray:
-    # Детекция фона через кластеризацию
+def detect_background_and_objects(
+        image_np: np.ndarray,
+        color_threshold=30,
+        area_limits=(0.0005, 0.2)
+    ) -> np.ndarray:
+    """
+    Улучшенная детекция фона на основе кластеризации и градиентов.
+    Возвращает маску фона (uint8 0/255).
+    """
+    h, w = image_np.shape[:2]
+    img_area = h * w
+
+    # Детекция фона через кластеризацию по цвету
     lab = cv2.cvtColor(image_np, cv2.COLOR_RGB2Lab)
     l_channel = lab[:, :, 0]
     a_channel = lab[:, :, 1]
     b_channel = lab[:, :, 2]
+
     try:
         pixels = np.concatenate([a_channel.reshape(-1, 1), b_channel.reshape(-1, 1)], axis=1).astype(np.float32)
         _, labels, centers = cv2.kmeans(pixels, 2, None,
                                          (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0),
                                          10, cv2.KMEANS_PP_CENTERS)
         labels_image = labels.reshape(a_channel.shape)
-        center_l = []
-        for i in range(centers.shape[0]):
-            mask = (labels_image == i)
-            if mask.any():
-                center_l.append(float(l_channel[mask].mean()))
-            else:
-                center_l.append(0.0)
-        background_label = int(np.argmin(center_l))
-        mask_color = (labels_image == background_label).astype(np.uint8) * 255
+        center_vals = centers.flatten()
+        background_label = int(np.argmin(center_vals))
+        mask_bg = (labels_image == background_label).astype(np.uint8) * 255
     except:
-        mask_color = np.ones_like(l_channel, dtype=np.uint8) * 255
+        mask_bg = np.ones_like(l_channel, dtype=np.uint8) * 255
 
-    # Градиент для выделения объектов
-    try:
-        sobelx = cv2.Sobel(l_channel, cv2.CV_16S, 1, 0, ksize=3)
-        sobely = cv2.Sobel(l_channel, cv2.CV_16S, 0, 1, ksize=3)
-        gradient = cv2.magnitude(sobelx, sobely).astype(np.uint8)
-        _, edges = cv2.threshold(gradient, 30, 255, cv2.THRESH_BINARY)
-        edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5)), iterations=1)
-    except:
-        edges = np.zeros_like(l_channel, dtype=np.uint8)
+    # Улучшение маски с помощью морфологии
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    mask_bg = cv2.morphologyEx(mask_bg, cv2.MORPH_OPEN, kernel)
+    mask_bg = cv2.morphologyEx(mask_bg, cv2.MORPH_CLOSE, kernel)
 
-    combined = cv2.bitwise_or(mask_color, edges)
+    # Детекция границ, чтобы выделить объекты
+    sobelx = cv2.Sobel(l_channel, cv2.CV_16S, 1, 0, ksize=3)
+    sobely = cv2.Sobel(l_channel, cv2.CV_16S, 0, 1, ksize=3)
+    gradient = cv2.magnitude(sobelx, sobely).astype(np.uint8)
+    _, edges = cv2.threshold(gradient, 30, 255, cv2.THRESH_BINARY)
+    edges = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
 
-    contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Объединяем маски
+    combined_mask = cv2.bitwise_or(mask_bg, edges)
 
-    object_mask = np.zeros_like(l_channel, dtype=np.uint8)
-    img_area = image_np.shape[0] * image_np.shape[1]
-    min_area = 0.0005 * img_area
-    max_area = 0.2 * img_area
+    # Находим контуры объектов
+    contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    mask_objects = np.zeros_like(l_channel, dtype=np.uint8)
+    img_area = h * w
+    min_area, max_area = area_limits[0] * img_area, area_limits[1] * img_area
 
     for c in contours:
         area = cv2.contourArea(c)
         if area < min_area or area > max_area:
             continue
-        cv2.drawContours(object_mask, [c], -1, 255, thickness=-1)
+        cv2.drawContours(mask_objects, [c], -1, 255, thickness=-1)
 
-    return object_mask
+    # Возвращаем маску фона (обратную маске объектов)
+    final_bg_mask = cv2.bitwise_not(mask_objects)
+    return final_bg_mask
 
 def combine_masks(masks: List[np.ndarray]) -> Optional[np.ndarray]:
     if not masks:
