@@ -3,6 +3,8 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import ast
+from collections import Counter
 
 st.set_page_config(page_title="Аналитика Wildberries", layout="wide")
 st.title("Аналитика данных товаров Wildberries")
@@ -113,7 +115,6 @@ if search_query:
 
         # Анализ характеристик для фильтрации
         st.info("Анализ характеристик товаров...")
-        import ast
         characteristics_expanded = []
         for idx, row in df_filtered.iterrows():
             try:
@@ -125,7 +126,6 @@ if search_query:
             if ch_str:
                 all_chars.extend([c.strip() for c in ch_str.split(',')])
         if all_chars:
-            from collections import Counter
             top_chars = Counter(all_chars).most_common(10)
             # Визуализация топ характеристик
             st.subheader("ТОП 10 характеристик товаров")
