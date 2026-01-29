@@ -1,7 +1,4 @@
-opencv-python
-numpy
-Pillow
-onnxruntime
-rembg
-transformers
-streamlit ; extra == "streamlit"
+requests
+pandas
+streamlit
+beautifulsoup4
