@@ -14,27 +14,9 @@ def extract_product_id_from_url(url):
         return match.group(1)
     return None
 
+# Временная функция для получения характеристик карточки (без запросов)
 def fetch_card_details(product_id, retries=3, delay=2):
-    url = f"https://wbx-content-v2.wbstatic.net/ru/{product_id}.json"
-    for attempt in range(retries):
-        try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                characteristics = data.get("characteristics", [])
-                applicability = data.get("applicability", [])
-                characteristics_str = ", ".join([f"{c['name']}: {c['value']}" for c in characteristics]) if characteristics else ""
-                applicability_str = ", ".join([a['name'] for a in applicability]) if applicability else ""
-                all_data_str = str(data)
-                return characteristics_str, applicability_str, all_data_str
-            elif response.status_code == 429:
-                st.warning("Превышен лимит запросов, повтор через 10 секунд")
-                time.sleep(10)
-            else:
-                return "", "", ""
-        except Exception as e:
-            st.error(f"Ошибка при получении данных для ID {product_id}: {e}")
-            time.sleep(delay)
+    # Временно отключена загрузка данных, возвращает пустые строки
     return "", "", ""
 
 def fetch_wb_data(query, page=1):
@@ -132,6 +114,7 @@ def main():
 
         for idx, row in df.iterrows():
             if row['id']:
+                # Временно функция возвращает пустые строки, чтобы избежать ошибок
                 charac, app, all_data = fetch_card_details(row['id'])
                 characteristics_list.append(charac)
                 applicability_list.append(app)
@@ -152,9 +135,9 @@ def main():
         min_rating = st.sidebar.slider("Мин. рейтинг", 0.0, 5.0, 0.0, 0.5)
 
         df_filtered = df[
-            (df['price'] >= min_price) &
-            (df['price'] <= max_price) &
-            (df['rating'] >= min_rating)
+            (df['price'] >= min_price if not pd.isnull(df['price'])) &
+            (df['price'] <= max_price if not pd.isnull(df['price'])) &
+            (df['rating'] >= min_rating if not pd.isnull(df['rating'])) 
         ]
 
         # Анализ характеристик
