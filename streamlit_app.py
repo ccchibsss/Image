@@ -1,209 +1,183 @@
-import requests
-import time
-import os
-import pandas as pd
-import sqlite3
 import streamlit as st
-from bs4 import BeautifulSoup
-import logging
-import random
-import threading
+import requests
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-def main():
-    # Логирование
-    logging.basicConfig(filename='wildberries_parser.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+st.set_page_config(page_title="Аналитика Wildberries", layout="wide")
+st.title("Аналитика данных товаров Wildberries")
 
-    # Конфигурация
-    MAX_RETRIES = 10
-    BACKOFF_BASE = 2
-    DELAY_BETWEEN_REQUESTS = 1
-    USE_PROXIES = False
-    PROXY_LIST = []
+# Функция для парсинга данных товаров
+@st.cache
+def fetch_wb_data(query, page=1):
+    url = (
+        f"https://search.wb.ru/exactmatch/ru/common/v18/search"
+        f"?appType=1&curr=rub&dest=-1257786&lang=ru&page={page}"
+        f"&query={requests.utils.quote(query)}&resultset=catalog&sort=popular&spp=30"
+    )
+    response = requests.get(url)
+    data = response.json()
+    products = data.get("products", [])
+    items = []
+    for p in products:
+        size_info = p.get("sizes", [{}])[0]
+        price = size_info.get("price", {}).get("product", 0) / 100 if size_info else 0
+        item = {
+            "id": p.get("id"),
+            "name": p.get("name"),
+            "brand": p.get("brand"),
+            "price": price,
+            "rating": p.get("rating", 0),
+            "feedbacks": p.get("feedbacks", 0),
+        }
+        items.append(item)
+    return pd.DataFrame(items)
 
-    # Инициализация Streamlit
-    st.set_page_config(page_title="Расширенный парсер Wildberries", layout="wide")
-    if 'progress' not in st.session_state:
-        st.session_state['progress'] = 0
-    if 'stop' not in st.session_state:
-        st.session_state['stop'] = False
-    if 'pause' not in st.session_state:
-        st.session_state['pause'] = False
+# Получение характеристик и применимости
+def fetch_card_details(product_id):
+    url = f"https://wbx-content-v2.wbstatic.net/ru/{product_id}.json"
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            characteristics = data.get("characteristics", [])
+            applicability = data.get("applicability", [])
+            characteristics_str = ", ".join([f"{c['name']}: {c['value']}" for c in characteristics]) if characteristics else ""
+            applicability_str = ", ".join([a['name'] for a in applicability]) if applicability else ""
+            all_data_str = str(data)
+            return characteristics_str, applicability_str, all_data_str
+        else:
+            return "", "", ""
+    except:
+        return "", "", ""
 
-    st.title("Расширенный парсер Wildberries")
-    st.write("Настройте параметры и запускайте парсинг.")
+# Настройки поиска
+with st.sidebar:
+    st.header("Настройки поиска")
+    search_query = st.text_input("Введите запрос для поиска", value="смартфон")
+    page_number = st.number_input("Номер страницы", min_value=1, max_value=10, value=1)
 
-    save_format = st.sidebar.radio("Формат сохранения", ["CSV", "SQLite"])
-    filename_csv = st.sidebar.text_input("Имя файла CSV", value='wildberries_products_extended.csv')
-    if save_format == "SQLite":
-        db_name = st.sidebar.text_input("Имя базы данных SQLite", value="wildberries_extended.db")
-        conn = sqlite3.connect(db_name)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS products (
-                link TEXT PRIMARY KEY,
-                title TEXT,
-                price TEXT,
-                images TEXT,
-                description TEXT,
-                characteristics TEXT
-            )
-        ''')
-        conn.commit()
+if search_query:
+    with st.spinner("Загружаем данные..."):
+        df = fetch_wb_data(search_query, page=page_number)
 
-    if USE_PROXIES:
-        PROXY_LIST = [
-            'http://proxy1:port',
-            'http://proxy2:port',
+    if df.empty:
+        st.warning("Товары не найдены.")
+    else:
+        # Получение характеристик и применимости
+        st.info("Получение характеристик и применимости карточек...")
+        characteristics_list = []
+        applicability_list = []
+        all_card_data_list = []
+        for idx, row in df.iterrows():
+            charac, app, all_data = fetch_card_details(row['id'])
+            characteristics_list.append(charac)
+            applicability_list.append(app)
+            all_card_data_list.append(all_data)
+        df['characteristics'] = characteristics_list
+        df['applicability'] = applicability_list
+        df['all_card_data'] = all_card_data_list
+
+        # Фильтрация по цене и рейтингу
+        min_price = st.sidebar.number_input("Мин. цена", 0.0, 1000000.0, 0.0)
+        max_price = st.sidebar.number_input("Макс. цена", 0.0, 1000000.0, 30000.0)
+        min_rating = st.sidebar.slider("Мин. рейтинг", 0.0, 5.0, 0.0, 0.5)
+
+        df_filtered = df[
+            (df['price'] >= min_price) &
+            (df['price'] <= max_price) &
+            (df['rating'] >= min_rating)
         ]
 
-    def get_random_proxy():
-        if USE_PROXIES and PROXY_LIST:
-            return {'http': random.choice(PROXY_LIST), 'https': random.choice(PROXY_LIST)}
-        return None
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/105.0.0.0 Safari/537.36"
-    }
-
-    def safe_request(url, headers=None, retries=MAX_RETRIES):
-        attempt = 0
-        while attempt < retries:
-            proxy = get_random_proxy()
+        # Анализ характеристик для фильтрации
+        st.info("Анализ характеристик товаров...")
+        # Собираем все характеристики в один DataFrame
+        import ast
+        characteristics_expanded = []
+        for idx, row in df_filtered.iterrows():
             try:
-                response = requests.get(url, headers=headers, proxies=proxy, timeout=15)
-                if response.status_code == 200:
-                    if "captcha" in response.text.lower() or "block" in response.text.lower():
-                        logging.warning(f"Обнаружена капча или блокировка на {url}")
-                        time.sleep(10 * attempt)
-                    else:
-                        return response
-                elif response.status_code in [429, 403]:
-                    wait_time = BACKOFF_BASE ** attempt + random.uniform(0, 1)
-                    logging.warning(f"Блокировка (статус {response.status_code}). Повтор через {wait_time:.2f} сек.")
-                    time.sleep(wait_time)
-                else:
-                    response.raise_for_status()
-            except requests.RequestException as e:
-                wait_time = BACKOFF_BASE ** attempt + random.uniform(0, 1)
-                logging.warning(f"Ошибка запроса: {e}. Повтор через {wait_time:.2f} сек.")
-                time.sleep(wait_time)
-            attempt += 1
-        logging.error(f"Не удалось получить {url} после {retries} попыток.")
-        return None
+                # Возможно, характеристики хранятся как строка, нужно преобразовать
+                # Тут предполагается, что характеристика — строка, разделенная запятыми
+                # Можно оставить как есть, если данные уже есть
+                # В данном случае используем просто как есть
+                characteristics_expanded.append(row['characteristics'])
+            except:
+                characteristics_expanded.append('')
+        # Получить топ характеристик
+        all_chars = []
+        for ch_str in characteristics_expanded:
+            if ch_str:
+                all_chars.extend([c.strip() for c in ch_str.split(',')])
+        if all_chars:
+            from collections import Counter
+            top_chars = Counter(all_chars).most_common(10)
+            # Визуализация топ характеристик
+            st.subheader("ТОП 10 характеристик товаров")
+            fig_char, ax_char = plt.subplots()
+            sns.barplot(x=[tc[1] for tc in top_chars], y=[tc[0] for tc in top_chars], ax=ax_char)
+            ax_char.set_xlabel("Количество товаров")
+            st.pyplot(fig_char)
 
-    def save_product_csv(product_data, filename):
-        df = pd.DataFrame([product_data], columns=["link", "title", "price", "images", "description", "characteristics"])
-        if os.path.exists(filename):
-            df.to_csv(filename, mode='a', index=False, header=False)
+            # Выбор характеристики для анализа
+            selected_char = st.selectbox("Выберите характеристику для анализа", options=[tc[0] for tc in top_chars])
+            # Фильтр товаров по выбранной характеристике
+            filtered_ids = []
+            for idx, ch_str in enumerate(characteristics_expanded):
+                if selected_char in ch_str:
+                    filtered_ids.append(df_filtered.index[idx])
+            df_char_filtered = df_filtered.loc[filtered_ids]
         else:
-            df.to_csv(filename, mode='w', index=False)
+            df_char_filtered = df_filtered
 
-    def save_product_sqlite(cursor, product_data):
-        cursor.execute('''
-            INSERT OR REPLACE INTO products (link, title, price, images, description, characteristics)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', product_data)
-        if save_format == "SQLite":
-            conn.commit()
+        # Основные фильтры
+        df_final = df_char_filtered[
+            (df_char_filtered['price'] >= min_price) &
+            (df_char_filtered['price'] <= max_price) &
+            (df_char_filtered['rating'] >= min_rating)
+        ]
 
-    def parse_product(link):
-        response = safe_request(link)
-        if response:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            title_tag = soup.find('h1', {'class': 'title'})
-            title = title_tag.text.strip() if title_tag else ''
-            price_tag = soup.find('ins', {'class': 'price-block__final-price'})
-            price = price_tag.text.strip() if price_tag else ''
-            images = [img.get('src') for img in soup.find_all('img', {'class': 'swiper-slide__img'})]
-            description = ''
-            desc_tag = soup.find('div', {'class': 'product-page__description'})
-            if desc_tag:
-                description = desc_tag.text.strip()
-            characteristics = {}
-            details = soup.find('div', {'class': 'product-details'})
-            if details:
-                for row in details.find_all('div', {'class': 'product-details__row'}):
-                    key_tag = row.find('div', {'class': 'product-details__name'})
-                    value_tag = row.find('div', {'class': 'product-details__value'})
-                    if key_tag and value_tag:
-                        key = key_tag.text.strip().lower()
-                        value = value_tag.text.strip()
-                        characteristics[key] = value
-            return (
-                link,
-                title,
-                price,
-                '; '.join(images),
-                description,
-                '; '.join([f"{k}: {v}" for k, v in characteristics.items()])
-            )
-        return None
+        if df_final.empty:
+            st.warning("Нет товаров после фильтрации.")
+        else:
+            st.success(f"Товары после фильтрации: {len(df_final)}")
+            # Таблица
+            st.subheader("Отфильтрованные товары")
+            st.dataframe(df_final)
 
-    def get_store_products(store_url):
-        page = 1
-        total_products = 0
-        while True:
-            if st.session_state['stop']:
-                break
-            if st.session_state['pause']:
-                time.sleep(1)
-                continue
-            url = f"{store_url}?page={page}"
-            response = safe_request(url)
-            if response:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                product_cards = soup.find_all('a', {'class': 'product-card__main'})
-                if not product_cards:
-                    break
-                for a in product_cards:
-                    link = 'https://wildberries.ru' + a['href']
-                    product_data = parse_product(link)
-                    if product_data:
-                        if save_format == "CSV":
-                            save_product_csv(product_data, filename_csv)
-                        elif save_format == "SQLite":
-                            save_product_sqlite(cursor, product_data)
-                        st.session_state['progress'] += 1
-                        progress = st.session_state['progress']
-                        st.write(f'Обработано товаров: {progress}')
-                        st.progress(progress / 1000)  # Настройте по необходимости
-                        time.sleep(DELAY_BETWEEN_REQUESTS)
-                next_btn = soup.find('a', {'class': 'pagination__next'})
-                if not next_btn or 'disabled' in next_btn.get('class', []):
-                    break
-                else:
-                    page += 1
-            else:
-                break
-        return total_products
+            # Скачать CSV
+            csv = df_final.to_csv(index=False).encode()
+            st.download_button("Скачать CSV", data=csv, file_name="wb_filtered.csv", mime="text/csv")
 
-    def collect_full_store():
-        store_url = st.text_input("Введите ссылку магазина для сбора всех товаров", value='https://wildberries.ru/категории/автозапчасти')
-        if st.button("Собрать все товары магазина"):
-            st.session_state['stop'] = False
-            total_collected = get_store_products(store_url)
-            st.write(f"Обработано товаров: {st.session_state['progress']}")
+            # Графики
+            st.subheader("Распределение цен")
+            fig1, ax1 = plt.subplots()
+            sns.histplot(df_final['price'], bins=20, kde=True, ax=ax1)
+            ax1.set_xlabel("Цена, руб")
+            st.pyplot(fig1)
 
-    def run():
-        # Можно запускать разные функции
-        pass
+            st.subheader("Топ-10 брендов по количеству товаров")
+            top_brands = df_final['brand'].value_counts().head(10)
+            fig2, ax2 = plt.subplots()
+            sns.barplot(x=top_brands.values, y=top_brands.index, ax=ax2)
+            ax2.set_xlabel("Количество товаров")
+            st.pyplot(fig2)
 
-    # Запуск по кнопкам
-    if st.button("Запустить парсинг"):
-        st.session_state['stop'] = False
-        threading.Thread(target=run).start()
+            st.subheader("Топ-10 брендов по средней цене")
+            brand_avg = df_final.groupby('brand')['price'].mean().sort_values(ascending=False).head(10)
+            fig3, ax3 = plt.subplots()
+            sns.barplot(x=brand_avg.values, y=brand_avg.index, ax=ax3)
+            ax3.set_xlabel("Средняя цена")
+            st.pyplot(fig3)
 
-    if st.button("Остановить парсинг"):
-        st.session_state['stop'] = True
-
-    if st.button("Пауза/Продолжить"):
-        st.session_state['pause'] = not st.session_state['pause']
-
-    # Вызов функции для сбора всего магазина
-    collect_full_store()
-
-# Запускаем main
-if __name__ == "__main__":
-    main()
+            # Детали выбранного товара
+            if not df_final.empty:
+                selected_idx = st.number_input("Введите индекс товара для просмотра деталей (от 0 до {})".format(len(df_final)-1), min_value=0, max_value=len(df_final)-1, value=0)
+                selected_product = df_final.iloc[selected_idx]
+                st.subheader("Детали товара")
+                st.write("**Наименование:**", selected_product['name'])
+                st.write("**Бренд:**", selected_product['brand'])
+                st.write("**Цена:**", selected_product['price'])
+                st.write("**Рейтинг:**", selected_product['rating'])
+                st.write("**Характеристики:**", selected_product['characteristics'])
+                st.write("**Применимость:**", selected_product['applicability'])
+                st.write("**Полные данные карточки:**", selected_product['all_card_data'])
