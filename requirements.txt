@@ -1,5 +1,5 @@
+streamlit
 requests
 pandas
-streamlit
-beautifulsoup4
-altair
+matplotlib
+seaborn
