@@ -7,7 +7,7 @@ import seaborn as sns
 st.set_page_config(page_title="Аналитика Wildberries", layout="wide")
 st.title("Аналитика данных товаров Wildberries")
 
-# Функция для парсинга данных товаров
+# Обновленная функция для парсинга данных товаров с проверками
 @st.cache
 def fetch_wb_data(query, page=1):
     url = (
@@ -15,8 +15,30 @@ def fetch_wb_data(query, page=1):
         f"?appType=1&curr=rub&dest=-1257786&lang=ru&page={page}"
         f"&query={requests.utils.quote(query)}&resultset=catalog&sort=popular&spp=30"
     )
-    response = requests.get(url)
-    data = response.json()
+    # Для отладки выводим URL
+    st.write(f"URL запроса: {url}")
+
+    try:
+        response = requests.get(url)
+    except requests.exceptions.RequestException as e:
+        st.error(f"Ошибка при выполнении запроса: {e}")
+        return pd.DataFrame()
+
+    if response.status_code != 200:
+        st.error(f"Ошибка API: статус {response.status_code}")
+        return pd.DataFrame()
+
+    if not response.text:
+        st.warning("Пустой ответ API")
+        return pd.DataFrame()
+
+    # Попытка распарсить JSON
+    try:
+        data = response.json()
+    except ValueError:
+        st.error("Некорректный JSON-ответ от API")
+        return pd.DataFrame()
+
     products = data.get("products", [])
     items = []
     for p in products:
@@ -33,7 +55,7 @@ def fetch_wb_data(query, page=1):
         items.append(item)
     return pd.DataFrame(items)
 
-# Получение характеристик и применимости
+# Функция получения характеристик и применимости карточки
 def fetch_card_details(product_id):
     url = f"https://wbx-content-v2.wbstatic.net/ru/{product_id}.json"
     try:
@@ -91,19 +113,13 @@ if search_query:
 
         # Анализ характеристик для фильтрации
         st.info("Анализ характеристик товаров...")
-        # Собираем все характеристики в один DataFrame
         import ast
         characteristics_expanded = []
         for idx, row in df_filtered.iterrows():
             try:
-                # Возможно, характеристики хранятся как строка, нужно преобразовать
-                # Тут предполагается, что характеристика — строка, разделенная запятыми
-                # Можно оставить как есть, если данные уже есть
-                # В данном случае используем просто как есть
                 characteristics_expanded.append(row['characteristics'])
             except:
                 characteristics_expanded.append('')
-        # Получить топ характеристик
         all_chars = []
         for ch_str in characteristics_expanded:
             if ch_str:
@@ -171,7 +187,12 @@ if search_query:
 
             # Детали выбранного товара
             if not df_final.empty:
-                selected_idx = st.number_input("Введите индекс товара для просмотра деталей (от 0 до {})".format(len(df_final)-1), min_value=0, max_value=len(df_final)-1, value=0)
+                selected_idx = st.number_input(
+                    "Введите индекс товара для просмотра деталей (от 0 до {})".format(len(df_final)-1),
+                    min_value=0,
+                    max_value=len(df_final)-1,
+                    value=0
+                )
                 selected_product = df_final.iloc[selected_idx]
                 st.subheader("Детали товара")
                 st.write("**Наименование:**", selected_product['name'])
