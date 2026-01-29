@@ -14,7 +14,7 @@ def extract_product_id_from_url(url):
         return match.group(1)
     return None
 
-# Временная функция для получения характеристик карточки (без запросов)
+# Временно функция для получения характеристик карточки (без запросов)
 def fetch_card_details(product_id, retries=3, delay=2):
     # Временно отключена загрузка данных, возвращает пустые строки
     return "", "", ""
@@ -81,7 +81,7 @@ def main():
     if search_type == "По запросу" and search_query:
         with st.spinner("Загружаем данные по запросу..."):
             df = fetch_wb_data(search_query, page=page_number)
-    elif search_type == "По ссылке" and product_url:
+    elif search_type == "По ссылке" and 'product_url' in locals() and product_url:
         product_id = extract_product_id_from_url(product_url)
         if product_id:
             with st.spinner("Загружаем данные по ссылке..."):
@@ -134,10 +134,14 @@ def main():
         max_price = st.sidebar.number_input("Макс. цена", 0.0, 1000000.0, 30000.0)
         min_rating = st.sidebar.slider("Мин. рейтинг", 0.0, 5.0, 0.0, 0.5)
 
+        # Правильный фильтр с учетом null
         df_filtered = df[
-            (df['price'] >= min_price if not pd.isnull(df['price'])) &
-            (df['price'] <= max_price if not pd.isnull(df['price'])) &
-            (df['rating'] >= min_rating if not pd.isnull(df['rating'])) 
+            df['price'].notnull() &
+            (df['price'] >= min_price) &
+            (df['price'].notnull()) &
+            (df['price'] <= max_price) &
+            df['rating'].notnull() &
+            (df['rating'] >= min_rating)
         ]
 
         # Анализ характеристик
@@ -174,8 +178,10 @@ def main():
 
         # Основные фильтры
         df_final = df_char_filtered[
+            df_char_filtered['price'].notnull() &
             (df_char_filtered['price'] >= min_price) &
             (df_char_filtered['price'] <= max_price) &
+            df_char_filtered['rating'].notnull() &
             (df_char_filtered['rating'] >= min_rating)
         ]
 
