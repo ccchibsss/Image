@@ -1,13 +1,14 @@
-streamlit
-requests
-pandas
-matplotlib
-seaborn
-xlsxwriter
-fake-useragent
-cloudscraper
-undetected-chromedriver
-selenium
-fp
-aiohttp
-setuptools
+streamlit>=1.28.0
+    pandas>=2.0.0
+    requests>=2.31.0
+    matplotlib>=3.7.0
+    seaborn>=0.12.0
+    xlsxwriter>=3.1.0
+    fake-useragent>=1.4.0
+    cloudscraper>=1.2.71
+    undetected-chromedriver>=3.5.0
+    fp.free-proxy>=1.1.0
+    aiohttp>=3.9.0
+    PyYAML>=6.0
+    numpy>=1.24.0
+    scikit-learn>=1.3.0
