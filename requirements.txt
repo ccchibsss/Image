@@ -3,3 +3,11 @@ requests
 pandas
 matplotlib
 seaborn
+xlsxwriter
+fake-useragent
+cloudscraper
+undetected-chromedriver
+selenium
+fp-free-proxy
+aiohttp
+asyncio
