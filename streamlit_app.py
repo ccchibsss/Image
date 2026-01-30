@@ -24,7 +24,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 import cloudscraper
-from fp.fp import FreeProxy
+from fp import FreeProxy
 import asyncio
 import aiohttp
 
