@@ -10,3 +10,4 @@ undetected-chromedriver
 selenium
 fp
 aiohttp
+setuptools
