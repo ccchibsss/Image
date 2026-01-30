@@ -242,7 +242,7 @@ class EnhancedCardParser:
         
         try:
             # Основной эндпоинт для характеристик
-            char_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&lang=ru&locale=ru&nm={product_id}&spp=30"
+            char_url = f"https://catalog.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&lang=ru&locale=ru&nm={product_id}&spp=30"
             
             response = self.request_manager.make_request(char_url)
             
