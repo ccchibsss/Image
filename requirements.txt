@@ -8,6 +8,5 @@ fake-useragent
 cloudscraper
 undetected-chromedriver
 selenium
-fp-free-proxy
+fp
 aiohttp
-asyncio
