@@ -37,8 +37,8 @@ class Config:
         self.config_file = config_file
         self.default_config = {
             'parsing': {
-                'delay_min': 1.5,
-                'delay_max': 3.0,
+                'delay_min': 5.5,
+                'delay_max': 8.0,
                 'max_workers': 3,
                 'use_proxies': False,
                 'max_retries': 3,
